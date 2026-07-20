@@ -18,19 +18,23 @@ void GeminiChat::initialize() {
     }
 }
 
-// Static helper function for FreeRTOS task
+
+// FreeRTOS task
 void GeminiChat::sendMessageTask(void *param) {
     auto *taskParams = static_cast<std::pair<GeminiChat*, String>*>(param);
+
     GeminiChat *instance = taskParams->first;
     String message = taskParams->second;
-    
+
     instance->sendMessage(message);
 
-    delete taskParams;  // Free allocated memory
-    vTaskDelete(NULL);   // Terminate the task
+    delete taskParams;
+    vTaskDelete(NULL);
 }
 
+
 void GeminiChat::sendMessageAsync(const String &message) {
+
     auto *taskParams = new std::pair<GeminiChat*, String>(this, message);
 
     xTaskCreatePinnedToCore(
@@ -44,93 +48,192 @@ void GeminiChat::sendMessageAsync(const String &message) {
     );
 }
 
-// Function to clean unwanted characters from response text
+
+// Clean response
 String cleanResponse(String responseText) {
-    responseText.replace("* ", "");  // Remove all '* '
-    responseText.replace("*", " ");  // Remove all '*'
-    responseText.replace("**", "");  // Remove all '**'
-    responseText.replace("#", "");  // Remove all '#'
-    responseText.replace("  ", "");  // Remove all '  '
+
+    responseText.replace("* ", "");
+    responseText.replace("*", " ");
+    responseText.replace("**", "");
+    responseText.replace("#", "");
+    responseText.replace("  ", "");
+
     return responseText;
 }
 
+
+
 String GeminiChat::sendMessage(const String &message) {
+
     if (_apiKey.isEmpty()) {
-        return "API key not set. Restart if configured to resolve the issue.";
+        return "API key not set.";
     }
+
 
     WiFiClientSecure client;
     client.setInsecure();
 
+
     HTTPClient https;
-    https.setTimeout(10000);
-    
-    // Updated: switched from deprecated Gemini 1.5 Flash to Gemma 3 1B (free text model).
-    // String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + _apiKey;
-    String url = "https://generativelanguage.googleapis.com/v1beta/models/gemma-3-1b-it:generateContent?key=" + _apiKey;
+
+    https.setTimeout(15000);
+
+
+    // OpenRouter endpoint
+    String url = "https://openrouter.ai/api/v1/chat/completions";
+
 
     if (!https.begin(client, url)) {
-        Serial.println("Failed to connect to Gemini API.");
-        return "Failed to connect to Gemini API.";
+
+        Serial.println("Failed to connect to OpenRouter");
+
+        return "Failed to connect to OpenRouter.";
     }
 
-    https.addHeader("Content-Type", "application/json");
 
-    DynamicJsonDocument jsonRequest(1024);
-    JsonArray contents = jsonRequest.createNestedArray("contents");
-    JsonObject content = contents.createNestedObject();
-    JsonArray parts = content.createNestedArray("parts");
-    JsonObject part = parts.createNestedObject();
-    part["text"] = message;
-    jsonRequest["generationConfig"]["maxOutputTokens"] = 100;
+    // Headers
+    https.addHeader(
+        "Content-Type",
+        "application/json"
+    );
+
+    https.addHeader(
+        "Authorization",
+        "Bearer " + _apiKey
+    );
+
+
+    // JSON request
+
+    DynamicJsonDocument jsonRequest(2048);
+
+
+    jsonRequest["model"] =
+        "google/gemma-3-1b-it:free";
+
+
+    JsonArray messages =
+        jsonRequest.createNestedArray("messages");
+
+
+    JsonObject user =
+        messages.createNestedObject();
+
+
+    user["role"] = "user";
+    user["content"] = message;
+
+
+    jsonRequest["max_tokens"] = 100;
+
 
     String requestBody;
-    serializeJson(jsonRequest, requestBody);
-    jsonRequest.clear();
 
-    int httpResponseCode = https.POST(requestBody);
+    serializeJson(
+        jsonRequest,
+        requestBody
+    );
+
+
+    int httpResponseCode =
+        https.POST(requestBody);
+
+
+
     if (httpResponseCode != HTTP_CODE_OK) {
+
+        String error =
+            "HTTP error: " +
+            String(httpResponseCode);
+
         https.end();
-        return "HTTP request failed, code: " + String(httpResponseCode);
+
+        return error;
     }
 
-    String response = https.getString();
+
+
+    String response =
+        https.getString();
+
+
     https.end();
 
-    DynamicJsonDocument jsonResponse(2048);
-    DeserializationError error = deserializeJson(jsonResponse, response);
+
+
+    DynamicJsonDocument jsonResponse(4096);
+
+
+    DeserializationError error =
+        deserializeJson(
+            jsonResponse,
+            response
+        );
+
+
     if (error) {
+
         return "JSON parsing failed";
     }
 
-    if (jsonResponse.containsKey("candidates") && !jsonResponse["candidates"].isNull()) {
-        JsonArray candidates = jsonResponse["candidates"];
-        if (candidates.size() > 0) {
-            JsonObject candidate = candidates[0];
-            if (candidate.containsKey("content") && candidate["content"].containsKey("parts")) {
-                JsonArray parts = candidate["content"]["parts"];
-                if (parts.size() > 0) {
-                    String textResponse = parts[0]["text"].as<String>();
-                    
-                    // Clean the response by removing unwanted characters
-                    textResponse = cleanResponse(textResponse);
-                    
-                    const int maxResponseLength = 500;
-                    if (textResponse.length() > maxResponseLength) {
-                        textResponse = textResponse.substring(0, maxResponseLength) + "...";
-                    }
 
-                    #ifdef ui_TextArea_AI_response
-                        lv_textarea_set_text(ui_TextArea_AI_response, textResponse.c_str());
-                    #endif
 
-                    jsonResponse.clear();
-                    return textResponse;
-                }
+    // Read OpenRouter response
+
+    if (jsonResponse.containsKey("choices")) {
+
+
+        JsonArray choices =
+            jsonResponse["choices"];
+
+
+        if (choices.size() > 0) {
+
+
+            String textResponse =
+                choices[0]
+                ["message"]
+                ["content"]
+                .as<String>();
+
+
+
+            textResponse =
+                cleanResponse(textResponse);
+
+
+
+            const int maxResponseLength = 500;
+
+
+            if (textResponse.length() > maxResponseLength) {
+
+                textResponse =
+                    textResponse.substring(
+                        0,
+                        maxResponseLength
+                    )
+                    + "...";
             }
+
+
+
+            #ifdef ui_TextArea_AI_response
+
+            lv_textarea_set_text(
+                ui_TextArea_AI_response,
+                textResponse.c_str()
+            );
+
+            #endif
+
+
+
+            return textResponse;
         }
     }
 
-    jsonResponse.clear();
-    return "Unexpected response format or no candidates found.";
+
+
+    return "No response received.";
 }
